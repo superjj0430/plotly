@@ -1,0 +1,44 @@
+import dash
+from dash.dependencies import Input, Output, State
+import dash_core_components as dcc
+import dash_html_components as html
+
+app = dash.Dash()
+app.layout = html.Div([
+    html.Div(dcc.Input(id='input-on-submit', type='text', value='')),
+    dcc.Dropdown(
+        id='dropdown',
+        options=[],
+        value=None
+    ),
+    html.Button('Add Option', id='button', n_clicks=0)
+])
+
+
+@app.callback(
+    Output('dropdown', 'options'),
+    [Input('button', 'n_clicks')],
+    [State('dropdown', 'options'), State('input-on-submit', 'value')])
+def update_options(n_clicks, existing_options, value):
+    print(value)
+    
+    print(num_list(int(value)))
+    
+    existing_options = []
+    option_name = 'Option {}'.format(n_clicks)
+    for i in num_list(int(value)):
+        existing_options.append(i)
+    return existing_options
+
+def num_list(num):
+    if type(num) == int:
+        tmp = []
+
+        for i in range(num):
+            tmp.append(i)
+        return tmp
+    else:
+        return ['']
+
+if __name__ == "__main__":
+    app.run_server(debug=True, use_reloader=False)
