@@ -1,0 +1,419 @@
+# TFT x COC2
+import cx_Oracle 
+import paramiko
+import os
+import matplotlib.pyplot as plt
+import dataframe_image as dfi
+import dash
+from dash.dependencies import Input, Output, State
+import dash_core_components as dcc
+import dash_html_components as html
+import pandas as pd
+import numpy as np
+from pymongo import MongoClient
+import matplotlib.image as mpimg
+import plotly.express as px
+from PIL import Image
+import sqlalchemy
+from sqlalchemy import create_engine
+
+app = dash.Dash()
+app.layout = html.Div([
+    html.Div(dcc.Input(id='input-on-submit', type='text', value='')),
+    html.Button('Search TFT', id='button_search_tft', n_clicks=0),
+    html.Div(id='Search TFT waring', children=''),
+    dcc.Dropdown(
+        id='dropdown',
+        options=[],
+        value=None
+    ),
+    html.Div("select defect filter", id='defect_filter'),
+    dcc.Dropdown(
+        [
+        'AB01',
+        'AB02',
+        'AB03',
+        'AB04',
+        'AB05',
+        'AB06',
+        'AB07',
+        'AB08',
+        'AB09',
+        'AB10',
+        'AB11',
+        'AB12',
+        'AB13',
+        'AB14',
+        'AB15',
+        ],
+        ['AB06'],
+        multi=True,
+        id='defect_filter_dropdown',
+    ),
+    
+    html.Button('Generate Summary', id='button_sum', n_clicks=0),
+    html.Div(id='button_sum_output', children=''),
+    dcc.Loading(
+        id="loading-1",
+        children=[html.Div(id="button_sum_output")],
+        type="circle",
+    ),
+    dcc.Graph(id='plot_summary', figure = {}),
+    dcc.Graph(id='df_summary', figure = {})
+
+])
+
+
+
+# update tft time to dropdown
+@app.callback(
+    [Output('dropdown', 'options'),
+    Output('Search TFT waring', 'children')],
+    [Input('button_search_tft', 'n_clicks')],
+    [State('dropdown', 'options'), State('input-on-submit', 'value')], prevent_initial_call=True)
+def update_options(n_clicks, existing_options, value):
+    print(value)
+    time_list = get_tft_defect(tft_id = str(value), df_flag = False)
+    existing_options = []
+    if len(time_list)<1:
+        return existing_options, 'no data'
+    
+    
+    for i in time_list:
+        existing_options.append(i)
+    return existing_options, ''
+
+    
+
+# get tft time to update dropdown
+def get_tft_defect(tft_id, df_flag):
+    client = MongoClient('mongodb://wma:mamcb1@10.88.26.102:27017')
+    # choose Database
+    db = client["MT"]
+    # choose collection
+    collection = db["AOI_LUM_Defect_Coordinates"] 
+    print({'SHEET_ID':tft_id, 'OPID':'TNLBO', 'Insepction_Type':'L255'})
+    cursor = collection.find({'SHEET_ID':tft_id, 'OPID':'TNLBO', 'Insepction_Type':'L255'})
+    df = pd.DataFrame.from_records(cursor)
+    
+    if df_flag == True:
+        if df.shape[0] != 0:
+            return df
+        else:
+            return df
+    
+    else:
+        if df.shape[0] != 0:
+            global tftid
+            tftid = tft_id
+            print('tftid: ', tftid)
+            return list(set(df['CreateTime'].tolist()))
+        else:
+            return []
+
+
+
+
+
+@app.callback(
+    [Output('button_sum_output', 'children'),
+     Output("plot_summary", "figure"),
+     Output("df_summary", "figure")],
+    [Input('button_sum', 'n_clicks')],
+    [State('dropdown', 'value'),
+     State('defect_filter_dropdown', 'value')], prevent_initial_call=True)
+def generate_summary(n_clicks,value, defect_filter_dropdown_value):
+    print('tftid: ', tftid)
+    print('dropdown_value: ', value)
+    
+    # get select tft defect info
+    tft_choosen_time = value
+    all_tft_defect_df = get_tft_defect(tft_id = str(tftid), df_flag = True)
+    target_tft_df =  all_tft_defect_df[all_tft_defect_df['CreateTime']==tft_choosen_time]
+    del all_tft_defect_df
+    print('target_tft_df shape:', target_tft_df.shape)
+    
+    # get paring info
+    paring_dict = get_paring_info(tftid)
+    print('paring_dict: ', paring_dict)
+    coc2_rgb_df = concatenate_coc2_test(paring_dict)
+    print('coc2_rgb_df: ', coc2_rgb_df.head(5))
+    
+    plot_img_path, df_img_path = make_plot(tft_df = target_tft_df, coc2_rgb_df = coc2_rgb_df, datetime = tft_choosen_time, tft_id = tftid, defect_filter_dropdown_value = defect_filter_dropdown_value)
+    
+    plot_img = np.array(Image.open(plot_img_path))
+    df_img = np.array(Image.open(df_img_path))
+
+    fig1 = px.imshow(plot_img, color_continuous_scale="gray", width=800, height=800)
+    fig1.update_layout(coloraxis_showscale=False)
+    fig1.update_xaxes(showticklabels=False)
+    fig1.update_yaxes(showticklabels=False)
+    
+    fig2 = px.imshow(df_img, color_continuous_scale="gray", width=800, height=800)
+    fig2.update_layout(coloraxis_showscale=False)
+    fig2.update_xaxes(showticklabels=False)
+    fig2.update_yaxes(showticklabels=False)
+    
+    return 'testing{}'.format(tftid),  fig1, fig2
+
+
+
+
+
+# get paring info by oracle
+def get_paring_info(tft_id):
+    connection = cx_Oracle.connect(
+        'L4A_ULEDMFG_AP/L4A_ULEDMFG$AP@10.88.222.116:1522/m01h',                                                     
+        encoding='UTF-8', 
+        nencoding='UTF-8'
+    ) 
+
+
+    sql = '''
+        select sheet_id,
+        key_value_01 as coc2,
+        key_value_02 as area,
+        key_value_03 as wafer_id,
+        op_id,
+
+        lm_time
+        from beolh.h_wip_sheetevent
+        where code_cat = 'BONDING_MAP'
+        and sheet_id = '{}'
+        order by lm_time
+    '''.format(tft_id)
+    
+    paring_info_df = pd.read_sql(sql, con=connection)
+    paring_info_df = paring_info_df[paring_info_df['OP_ID']!= 'UM-REB'].sort_values(by=['COC2'])
+    paring_info_df.drop_duplicates(subset='COC2', keep="last")
+    paring_dict = dict(zip(paring_info_df["COC2"], paring_info_df["AREA"]))
+    return paring_dict
+
+
+# get coc2 data func
+def get_coc2(coc2_id):
+    file = getfile_path(coc2_id, 'AOI_EDC')
+    # file = getfile_path_local(coc2_id, 'AOI_EDC')
+    print('coc2_file: ', file)
+                     
+    # data location
+    column_spec = pd.read_csv('product_type.csv')
+    coc2_df_part_a = pd.read_csv(file, nrows= 7)
+    coc2_df_part_a = pd.DataFrame(columns=[i.split('=')[0] for i in coc2_df_part_a['_FACTOR'].tolist()], data = [[i.split('=')[-1] for i in coc2_df_part_a['_FACTOR'].tolist()]])
+    coc2_df_part_b = pd.read_csv(file , skiprows=9, names=column_spec[~column_spec['AOI_EDC'].isna()]['AOI_EDC'].tolist())
+    coc2_df_part_b = coc2_df_part_b.sort_values(by=['LED_Index_X', 'LED_Index_Y'], ascending=[True, True]).reset_index(drop=True)
+
+    # drop nonsense row
+    coc2_df_part_b = coc2_df_part_b[(coc2_df_part_b['LED_Index_X']!=0)]
+    coc2_df_part_b = coc2_df_part_b[(coc2_df_part_b['LED_Index_Y']!=0)]
+    return coc2_df_part_a, coc2_df_part_b
+
+
+
+
+def concatenate_coc2_test(paring_dict):
+    concatenate_format_json = {
+                'A': {'LED_Index_X':0, 'LED_Index_Y_Reverse':0},
+                'B': {'LED_Index_X':1, 'LED_Index_Y_Reverse':0},
+                'C': {'LED_Index_X':2, 'LED_Index_Y_Reverse':0},
+                'D': {'LED_Index_X':0, 'LED_Index_Y_Reverse':1},
+                'E': {'LED_Index_X':1, 'LED_Index_Y_Reverse':1},
+                'F': {'LED_Index_X':2, 'LED_Index_Y_Reverse':1},
+            }
+    
+    
+    copy_flag = True
+    for color in ['R', 'G', 'B']:
+        for i in paring_dict:
+            shot_area = paring_dict[i]
+            print('coc2_id: ', i)
+            print('shot_area: ', shot_area)
+            print('color: ', color)
+            coc2_df_part_a, coc2_df_part_b = get_coc2(i)
+            coc2_df_part_b = coc2_df_part_b[coc2_df_part_b['LED_TYPE']==color]
+            coc2_df_part_b.sort_values(by=['LED_Index_Y', 'LED_Index_X'], ascending=[True, True]).reset_index(drop=True)
+            print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'][['LED_Index_X', 'LED_Index_Y']])
+
+            # reverse y axis
+            y_axis = coc2_df_part_b['LED_Index_Y'].tolist()
+            y_axis.reverse()
+            coc2_df_part_b['LED_Index_Y_Reverse'] = y_axis
+            
+            # reverse x axis
+            x_axis = coc2_df_part_b['LED_Index_X'].tolist()
+            x_axis.reverse()
+            coc2_df_part_b['LED_Index_X_Reverse'] = x_axis
+            
+
+            # adjust axis accroding to shot area
+            x_max = max(coc2_df_part_b['LED_Index_X'].tolist())
+            y_max = max(coc2_df_part_b['LED_Index_Y_Reverse'].tolist())
+            x_adjust = concatenate_format_json[shot_area]['LED_Index_X']
+            y_adjust = concatenate_format_json[shot_area]['LED_Index_Y_Reverse']
+            print('x_max, y_max, x_adjust, y_adjust')
+            print(x_max, y_max, x_adjust, y_adjust)
+
+            coc2_df_part_b['LED_Index_X_concatenate'] = coc2_df_part_b['LED_Index_X']+x_max*x_adjust
+            coc2_df_part_b['LED_Index_X_Reverse'] = coc2_df_part_b['LED_Index_X_Reverse']+x_max*x_adjust
+            
+            coc2_df_part_b['LED_Index_Y_concatenate'] = coc2_df_part_b['LED_Index_Y']+y_max*y_adjust
+            coc2_df_part_b['LED_Index_Y_Reverse'] = coc2_df_part_b['LED_Index_Y_Reverse']+y_max*y_adjust
+            
+            coc2_df_part_b['shot_area'] = shot_area
+            
+            print('/////////////////////////////////////////////////////////////////')
+            print('cur file: ', i)
+            print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'].shape[0])
+            print('/////////////////////////////////////////////////////////////////')
+
+            if copy_flag == True:
+                tmp_df = coc2_df_part_b
+                copy_flag = False
+            else:
+                tmp_df = pd.concat([tmp_df,coc2_df_part_b],axis=0)
+
+        tmp_df = tmp_df.sort_values(by=['LED_Index_X', 'LED_Index_Y_Reverse'], ascending=[True, True]).reset_index(drop=True)        
+        # tmp_df.to_csv('coc2_rgb_df.csv', index=False)    
+    return tmp_df
+
+
+
+
+
+# connect server(local)
+def  getfile_path_local(file_name, ins_type):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect("10.88.19.29", 22, "wma", "wma")
+    sftp = ssh.open_sftp()
+    
+    remotedir = '/app_1/wma/AOI_DATA/L4AFLS01/ledfs/UMAOI100/DATA/UPLOAD/HIS/'
+    match_file_list = []
+    files = sftp.listdir(remotedir)
+    for file in files:
+        if file_name in file and ins_type in file:
+            print('file: ', file)
+            print('ins_type: ', ins_type)
+            match_file_list.append(os.path.join(remotedir, file))
+            
+    tmp = []
+    for file in match_file_list:
+        with sftp.open(file) as f:
+            f.prefetch()
+            coc2_df_part_a = pd.read_csv(f, nrows= 7)
+            coc2_df_part_a = pd.DataFrame(columns=[i.split('=')[0] for i in coc2_df_part_a['_FACTOR'].tolist()], data = [[i.split('=')[-1] for i in coc2_df_part_a['_FACTOR'].tolist()]])
+            
+            print('/////////////////////////////////////////////////////////////////')
+            print('cur file: ', file)
+            print(coc2_df_part_a)
+            print('/////////////////////////////////////////////////////////////////')
+            
+            if coc2_df_part_a['OPERATION_ID'].tolist()[0] != 'CNAPL':
+                pass
+            else:
+                print('CNAPL file: ', file)
+                tmp.append(file)
+    
+    match_file_list = tmp
+            
+    latest_file = ''
+    for i in  match_file_list:
+        if latest_file == '':
+            latest_file = i
+        else:
+            if sftp.stat(latest_file).st_mtime > sftp.stat(i).st_mtime:
+                pass
+            else:
+                latest_file = i
+    sftp.get(latest_file, os.getcwd()+'\\{}'.format(latest_file.split('/')[-1]))
+    return os.getcwd()+'\\{}'.format(latest_file.split('/')[-1])
+
+
+def make_plot(tft_df, coc2_rgb_df, datetime, tft_id, defect_filter_dropdown_value):
+    #get summary num
+    coc2_ab06 = coc2_rgb_df[coc2_rgb_df['Defect Reciepe'].isin(defect_filter_dropdown_value)].shape[0]
+    tft_ab06 = tft_df.shape[0]
+
+    
+    summary=np.array([tft_ab06, coc2_ab06])
+    process_type=['main', 'coc2']  
+    x=np.arange(len(process_type))                   
+    plt.figure(figsize=(2,5))
+    plt.bar(x, summary, tick_label=process_type, width=0.5,align = 'edge')  
+    plt.title('TFTxCOC2')        
+    plt.xlabel('process_type')                     
+    plt.ylabel('count')                   
+    plt.savefig('summary_plot_{}.png'.format(tft_id))
+
+    # summary sheet
+    d = [['', datetime], ['main bonding', tft_ab06],[ 'coc2 defect', coc2_ab06]]
+    df = pd.DataFrame(d, columns = ['item','date'])
+    # dfi.export(df, "df_summary_{}.png".format(tft_id))
+  
+    # DataFrame=>png
+    plt.figure('123')            
+    ax = plt.axes(frame_on=False)
+    ax.xaxis.set_visible(False)  
+    ax.yaxis.set_visible(False)  
+    pd.plotting.table(ax, df, loc='center') 
+    plt.savefig("df_summary_{}.png".format(tft_id)) 
+  
+  
+    
+    # show in window(local)
+    # img_list = ['summary_plot_{}.png'.format(tft_id),  "df_summary_{}.png".format(tft_id)]
+    # for filename in  img_list:
+    #     image = mpimg.imread(filename)
+    #     # <something gets done here>
+    #     plt.imshow(image)
+    #     plt.show()
+    return 'summary_plot_{}.png'.format(tft_id), "df_summary_{}.png".format(tft_id)
+
+
+# for docker
+def  getfile_path(file_name, ins_type):
+    
+    dir_path = '/AOI_DATA/L4AFLS01/ledfs/UMAOI100/DATA/UPLOAD/HIS/'
+    match_file_list = []
+    for (root, dirs, files) in os.walk(dir_path):
+
+        for file in files:
+            if file_name in file and ins_type in file:
+                print('file: ', file)
+                print('ins_type: ', ins_type)
+                match_file_list.append(os.path.join(dir_path, file))
+            
+    tmp = []
+    for file in match_file_list:
+            coc2_df_part_a = pd.read_csv(file, nrows= 7)
+            coc2_df_part_a = pd.DataFrame(columns=[i.split('=')[0] for i in coc2_df_part_a['_FACTOR'].tolist()], data = [[i.split('=')[-1] for i in coc2_df_part_a['_FACTOR'].tolist()]])
+            
+            print('/////////////////////////////////////////////////////////////////')
+            print('cur file: ', file)
+            print(coc2_df_part_a)
+            print('/////////////////////////////////////////////////////////////////')
+            
+            if coc2_df_part_a['OPERATION_ID'].tolist()[0] != 'CNAPL':
+                pass
+            else:
+                print('CNAPL file: ', file)
+                tmp.append(file)
+    
+    match_file_list = tmp
+            
+    latest_file = ''
+    for i in  match_file_list:
+        if latest_file == '':
+            latest_file = i
+        else:
+            if os.path.getmtime(latest_file) > os.path.getmtime(i):
+                pass
+            else:
+                latest_file = i
+    return latest_file
+
+
+
+
+if __name__ == "__main__":
+    app.run_server(debug=True,port=8048,  use_reloader=False, host = "0.0.0.0")
