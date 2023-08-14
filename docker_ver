@@ -88,13 +88,16 @@ def update_options(n_clicks, existing_options, value):
 # get tft time to update dropdown
 def get_tft_defect(tft_id, df_flag):
     client = MongoClient('mongodb://wma:mamcb1@10.88.26.102:27017')
-    # choose Database
+
     db = client["MT"]
-    # choose collection
+
     collection = db["AOI_LUM_Defect_Coordinates"] 
     print({'SHEET_ID':tft_id, 'OPID':'TNLBO', 'Insepction_Type':'L255'})
     cursor = collection.find({'SHEET_ID':tft_id, 'OPID':'TNLBO', 'Insepction_Type':'L255'})
     df = pd.DataFrame.from_records(cursor)
+    if df.shape[0] < 1:
+        cursor = collection.find({'SHEET_ID':tft_id, 'OPID':'MT-ACL', 'Insepction_Type':'L255'})
+        df = pd.DataFrame.from_records(cursor)
     
     if df_flag == True:
         if df.shape[0] != 0:
@@ -125,11 +128,13 @@ def get_tft_defect(tft_id, df_flag):
 def generate_summary(n_clicks,value, defect_filter_dropdown_value):
     print('tftid: ', tftid)
     print('dropdown_value: ', value)
+    print('defect_filter_dropdown: ', defect_filter_dropdown_value)
     
     # get select tft defect info
     tft_choosen_time = value
     all_tft_defect_df = get_tft_defect(tft_id = str(tftid), df_flag = True)
     target_tft_df =  all_tft_defect_df[all_tft_defect_df['CreateTime']==tft_choosen_time]
+    target_tft_df.to_csv('target_tft_df_{}.csv'.format(tftid))
     del all_tft_defect_df
     print('target_tft_df shape:', target_tft_df.shape)
     
@@ -137,9 +142,11 @@ def generate_summary(n_clicks,value, defect_filter_dropdown_value):
     paring_dict = get_paring_info(tftid)
     print('paring_dict: ', paring_dict)
     coc2_rgb_df = concatenate_coc2_test(paring_dict)
+    coc2_rgb_df.to_csv('coc2_rgb_d_{}.csv'.format(tftid))
     print('coc2_rgb_df: ', coc2_rgb_df.head(5))
     
     plot_img_path, df_img_path = make_plot(tft_df = target_tft_df, coc2_rgb_df = coc2_rgb_df, datetime = tft_choosen_time, tft_id = tftid, defect_filter_dropdown_value = defect_filter_dropdown_value)
+    
     
     plot_img = np.array(Image.open(plot_img_path))
     df_img = np.array(Image.open(df_img_path))
@@ -191,9 +198,9 @@ def get_paring_info(tft_id):
 
 
 # get coc2 data func
-def get_coc2(coc2_id):
-    file = getfile_path(coc2_id, 'AOI_EDC')
-    # file = getfile_path_local(coc2_id, 'AOI_EDC')
+def get_coc2(coc2_id, shot):
+    # file = get_file_path(coc2_id)
+    file = getfile_path_local(coc2_id, 'AOI_EDC', shot)
     print('coc2_file: ', file)
                      
     # data location
@@ -220,17 +227,64 @@ def concatenate_coc2_test(paring_dict):
                 'E': {'LED_Index_X':1, 'LED_Index_Y_Reverse':1},
                 'F': {'LED_Index_X':2, 'LED_Index_Y_Reverse':1},
             }
-    
-    
-    copy_flag = True
-    for color in ['R', 'G', 'B']:
+    if len(paring_dict) != 1:
+        copy_flag = True
+
         for i in paring_dict:
             shot_area = paring_dict[i]
-            print('coc2_id: ', i)
-            print('shot_area: ', shot_area)
-            print('color: ', color)
-            coc2_df_part_a, coc2_df_part_b = get_coc2(i)
-            coc2_df_part_b = coc2_df_part_b[coc2_df_part_b['LED_TYPE']==color]
+            coc2_df_part_a, coc2_df_part_b_orignal = get_coc2(i, 'six_shot')
+            for color in ['R', 'G', 'B']:
+                coc2_df_part_b = coc2_df_part_b_orignal[coc2_df_part_b_orignal['LED_TYPE']==color]
+                coc2_df_part_b.sort_values(by=['LED_Index_Y', 'LED_Index_X'], ascending=[True, True]).reset_index(drop=True)
+                print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'][['LED_Index_X', 'LED_Index_Y']])
+
+                # reverse y axis
+                y_axis = coc2_df_part_b['LED_Index_Y'].tolist()
+                y_axis.reverse()
+                coc2_df_part_b['LED_Index_Y_Reverse'] = y_axis
+                
+                # reverse x axis
+                x_axis = coc2_df_part_b['LED_Index_X'].tolist()
+                x_axis.reverse()
+                coc2_df_part_b['LED_Index_X_Reverse'] = x_axis
+                
+
+                # adjust axis accroding to shot area
+                x_max = max(coc2_df_part_b['LED_Index_X'].tolist())
+                y_max = max(coc2_df_part_b['LED_Index_Y_Reverse'].tolist())
+                x_adjust = concatenate_format_json[shot_area]['LED_Index_X']
+                y_adjust = concatenate_format_json[shot_area]['LED_Index_Y_Reverse']
+                print('x_max, y_max, x_adjust, y_adjust')
+                print(x_max, y_max, x_adjust, y_adjust)
+
+                coc2_df_part_b['LED_Index_X_concatenate'] = coc2_df_part_b['LED_Index_X']+x_max*x_adjust
+                coc2_df_part_b['LED_Index_X_Reverse'] = coc2_df_part_b['LED_Index_X_Reverse']+x_max*x_adjust
+                
+                coc2_df_part_b['LED_Index_Y_concatenate'] = coc2_df_part_b['LED_Index_Y']+y_max*y_adjust
+                coc2_df_part_b['LED_Index_Y_Reverse'] = coc2_df_part_b['LED_Index_Y_Reverse']+y_max*y_adjust
+                
+                coc2_df_part_b['shot_area'] = shot_area
+                
+                print('/////////////////////////////////////////////////////////////////')
+                print('cur file: ', i)
+                print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'].shape[0])
+                print('/////////////////////////////////////////////////////////////////')
+
+                if copy_flag == True:
+                    tmp_df = coc2_df_part_b
+                    copy_flag = False
+                else:
+                    tmp_df = pd.concat([tmp_df,coc2_df_part_b],axis=0)
+            tmp_df = tmp_df.sort_values(by=['LED_Index_X', 'LED_Index_Y_Reverse'], ascending=[True, True]).reset_index(drop=True)        
+            # tmp_df.to_csv('coc2_rgb_df.csv', index=False)    
+        return tmp_df
+    
+    else:
+        print('oneshot!!')
+        copy_flag = True
+        coc2_df_part_a, coc2_df_part_b_orignal = get_coc2(list(paring_dict.keys())[0], 'oneshot')
+        for color in ['R', 'G', 'B']:
+            coc2_df_part_b = coc2_df_part_b_orignal[coc2_df_part_b_orignal['LED_TYPE']==color]
             coc2_df_part_b.sort_values(by=['LED_Index_Y', 'LED_Index_X'], ascending=[True, True]).reset_index(drop=True)
             print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'][['LED_Index_X', 'LED_Index_Y']])
 
@@ -248,8 +302,8 @@ def concatenate_coc2_test(paring_dict):
             # adjust axis accroding to shot area
             x_max = max(coc2_df_part_b['LED_Index_X'].tolist())
             y_max = max(coc2_df_part_b['LED_Index_Y_Reverse'].tolist())
-            x_adjust = concatenate_format_json[shot_area]['LED_Index_X']
-            y_adjust = concatenate_format_json[shot_area]['LED_Index_Y_Reverse']
+            x_adjust = 0
+            y_adjust = 0
             print('x_max, y_max, x_adjust, y_adjust')
             print(x_max, y_max, x_adjust, y_adjust)
 
@@ -259,10 +313,10 @@ def concatenate_coc2_test(paring_dict):
             coc2_df_part_b['LED_Index_Y_concatenate'] = coc2_df_part_b['LED_Index_Y']+y_max*y_adjust
             coc2_df_part_b['LED_Index_Y_Reverse'] = coc2_df_part_b['LED_Index_Y_Reverse']+y_max*y_adjust
             
-            coc2_df_part_b['shot_area'] = shot_area
+
             
             print('/////////////////////////////////////////////////////////////////')
-            print('cur file: ', i)
+            print('cur file: ', list(paring_dict.keys())[0])
             print(coc2_df_part_b[coc2_df_part_b['Defect Reciepe']=='AB06'].shape[0])
             print('/////////////////////////////////////////////////////////////////')
 
@@ -271,10 +325,9 @@ def concatenate_coc2_test(paring_dict):
                 copy_flag = False
             else:
                 tmp_df = pd.concat([tmp_df,coc2_df_part_b],axis=0)
-
         tmp_df = tmp_df.sort_values(by=['LED_Index_X', 'LED_Index_Y_Reverse'], ascending=[True, True]).reset_index(drop=True)        
         # tmp_df.to_csv('coc2_rgb_df.csv', index=False)    
-    return tmp_df
+        return tmp_df
 
 
 
@@ -330,43 +383,57 @@ def  getfile_path_local(file_name, ins_type):
 
 
 def make_plot(tft_df, coc2_rgb_df, datetime, tft_id, defect_filter_dropdown_value):
-    #get summary num
-    coc2_ab06 = coc2_rgb_df[coc2_rgb_df['Defect Reciepe'].isin(defect_filter_dropdown_value)].shape[0]
-    tft_ab06 = tft_df.shape[0]
+    # summary cnt
+    coc2_ab06 = coc2_rgb_df[coc2_rgb_df['Defect Reciepe'].isin(defect_filter_dropdown_value)]
+    color_list = ['R', 'G', 'B']
+    main_bond_list = ['main bonding']
+    coc2_list = [ 'coc2 defect']
+    coc2_total = 0
+    tft_total = tft_df.shape[0]
 
+    for color in color_list:
+        print(color)
+        tmp_coc2_df = coc2_ab06[coc2_ab06['LED_TYPE']==color]
+        tmp_tft_df = tft_df[tft_df['LED_TYPE']==color]
+        main_bond_list.append(tmp_tft_df.shape[0])
+
+        tmp_coc2_df_index = tmp_coc2_df[["LED_Index_X_Reverse", 'LED_Index_Y']].values.tolist()
+        tmp_tft_df_index = tmp_tft_df[["Pixel_X", 'Pixel_Y']].values.tolist()
+        x = set([tuple(lst) for lst in tmp_tft_df_index])&set([tuple(lst) for lst in tmp_coc2_df_index])
+        print(len(x))
+        coc2_list.append(len(x))
+        coc2_total+=len(x)
+        
+    coc2_list.append(coc2_total)
+    main_bond_list.append(tft_total)
+    print(coc2_list)
+    print(main_bond_list)
+
+
+    # 統計圖
+    X = ['Total','R','G','B']
+    TFT = [main_bond_list[4],main_bond_list[1],main_bond_list[2],main_bond_list[3]]
+    COC2 = [coc2_list[4],coc2_list[1],coc2_list[2],coc2_list[3]]
     
-    summary=np.array([tft_ab06, coc2_ab06])
-    process_type=['main', 'coc2']  
-    x=np.arange(len(process_type))                   
-    plt.figure(figsize=(2,5))
-    plt.bar(x, summary, tick_label=process_type, width=0.5,align = 'edge')  
-    plt.title('TFTxCOC2')        
-    plt.xlabel('process_type')                     
-    plt.ylabel('count')                   
+    X_axis = np.arange(len(X))
+
+    plt.bar(X_axis - 0.2, TFT, 0.4, label = 'MAIN')
+    plt.bar(X_axis + 0.2, COC2, 0.4, label = 'COC2')
+    
+    plt.xticks(X_axis, X)
+    plt.xlabel("TYPE")
+    plt.ylabel("CNT")
+    plt.title("TFTxCOCO2")
+    plt.legend()
     plt.savefig('summary_plot_{}.png'.format(tft_id))
 
-    # summary sheet
-    d = [['', datetime], ['main bonding', tft_ab06],[ 'coc2 defect', coc2_ab06]]
-    df = pd.DataFrame(d, columns = ['item','date'])
-    # dfi.export(df, "df_summary_{}.png".format(tft_id))
-  
-    # DataFrame=>png
-    plt.figure('123')            
-    ax = plt.axes(frame_on=False)
-    ax.xaxis.set_visible(False)  
-    ax.yaxis.set_visible(False)  
-    pd.plotting.table(ax, df, loc='center') 
-    plt.savefig("df_summary_{}.png".format(tft_id)) 
-  
-  
-    
-    # show in window(local)
-    # img_list = ['summary_plot_{}.png'.format(tft_id),  "df_summary_{}.png".format(tft_id)]
-    # for filename in  img_list:
-    #     image = mpimg.imread(filename)
-    #     # <something gets done here>
-    #     plt.imshow(image)
-    #     plt.show()
+
+
+    # summary sheet  
+    d = [main_bond_list,
+        coc2_list]
+    df = pd.DataFrame(d, columns = [datetime,'R', 'G', 'B', 'TOTAL'])
+    dfi.export(df, "df_summary_{}.png".format(tft_id))
     return 'summary_plot_{}.png'.format(tft_id), "df_summary_{}.png".format(tft_id)
 
 
@@ -392,8 +459,8 @@ def  getfile_path(file_name, ins_type):
             print('cur file: ', file)
             print(coc2_df_part_a)
             print('/////////////////////////////////////////////////////////////////')
-            
-            if coc2_df_part_a['OPERATION_ID'].tolist()[0] != 'CNAPL':
+            after_aoi_list = ['C2-APO', 'CNAPL']
+            if coc2_df_part_a['OPERATION_ID'].tolist()[0] not in after_aoi_list:
                 pass
             else:
                 print('CNAPL file: ', file)
