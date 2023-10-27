@@ -1,15 +1,13 @@
 項目	平台	配額	已買	類型
 arb	派網	600	200	網格
 op	派網	600	200	網格
-link	派網	550	200	網格
-doge	派網	550	200	網格
-pendle	派網	550	0	
+link	派網	250	200	網格
+doge	派網	250	200	網格
+pendle	派網	250	0	
 magic	派網	250	0	
 mkr 	派網	250	0	
 comp 	派網	250	0	
 rdnt	派網	250	200	網格
-
-
 velo 	bitget	250	250	現貨
 sonne	bitget	250	250	現貨
 atom	bitget	200	200	現貨
